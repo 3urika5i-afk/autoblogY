@@ -102,6 +102,13 @@ app.get('/calendar', async (c) => {
   return c.json({ calendar: results });
 });
 
+app.get('/media/:key', async (c) => {
+  const key = c.req.param('key');
+  const obj = await c.env.MEDIA_BUCKET.get(key);
+  if (!obj) return c.notFound();
+  return new Response(obj.body, { headers: { 'content-type': obj.httpMetadata?.contentType || 'image/jpeg' } });
+});
+
 app.post('/installer/bootstrap', async (c) => {
   const rl = await rateLimit(c);
   if (rl) return rl;
@@ -148,6 +155,15 @@ app.post('/articles/generate', async (c) => {
   return c.json({ queued: true });
 });
 
+// Simple A/B endpoint for CTA copy; deterministic by IP hash
+app.get('/ab/cta', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') || 'anon';
+  const bucket = hashToVariant(ip);
+  await bumpMetric(c.env.CACHE, `ab:cta:${bucket}:impressions`);
+  const copy = bucket === 'A' ? 'Get weekly value-packed briefs →' : 'Subscribe for 1-click trip plans →';
+  return c.json({ variant: bucket, copy });
+});
+
 // Scheduled cron: enqueue due content and weekly digest
 export default {
   fetch: app.fetch,
@@ -165,11 +181,17 @@ export default {
   },
   queue: async (batch: MessageBatch<ContentJob>, env: Env, ctx: ExecutionContext) => {
     for (const message of batch.messages) {
-      if (message.body.type === 'GENERATE_ARTICLE') {
-        await handleGenerateArticle(env, ctx, message.body.calendarId);
-      }
-      if (message.body.type === 'WEEKLY_DIGEST') {
-        await sendWeeklyDigest(env, ctx);
+      try {
+        if (message.body.type === 'GENERATE_ARTICLE') {
+          await handleGenerateArticle(env, ctx, message.body.calendarId);
+        }
+        if (message.body.type === 'WEEKLY_DIGEST') {
+          await sendWeeklyDigest(env, ctx);
+        }
+      } catch (err) {
+        console.error('Queue handler error', err);
+        // retry with small delay; Queue will stop after max deliveries
+        message.retry({ delaySeconds: 300 });
       }
     }
   }
@@ -186,9 +208,12 @@ async function handleGenerateArticle(env: Env, ctx: ExecutionContext, calendarId
   const settings = await env.DB.prepare(`SELECT key, value FROM settings`).all();
   const settingsMap = Object.fromEntries(settings.results.map((r: any) => [r.key, r.value]));
   const personas = JSON.parse(settingsMap.personas || '[]');
+  const monetisation = JSON.parse(settingsMap.monetisation || '{}');
 
   const brief = await buildBrief(env, calendar.target_keyword, personas);
   const article = await generateLongform(env, brief);
+  article.body = injectAffiliateLinks(article.body, monetisation);
+  article.body = await injectInternalLinks(env, article.body, article.slug);
 
   await env.DB.prepare(
     `INSERT INTO articles (id, title, slug, summary, body, status, published_at, hero_image, meta, schema_json)
@@ -213,8 +238,10 @@ async function handleGenerateArticle(env: Env, ctx: ExecutionContext, calendarId
     .bind(article.slug, calendarId)
     .run();
 
+  ctx.waitUntil(generateHeroImage(env, article));
   ctx.waitUntil(trackAnalytics(env, 'publish', { calendarId, slug: article.slug }));
   ctx.waitUntil(sendMilestoneEmail(env, article.title));
+  ctx.waitUntil(pingSitemaps(env));
 }
 
 async function buildBrief(env: Env, keyword: string, personas: any[]) {
@@ -259,7 +286,8 @@ async function generateLongform(env: Env, brief: any) {
     ogDescription: summary,
     ogImage: `${env.PUBLIC_URL}/media/${heroImage}`
   };
-  return { title, slug, summary, body: raw, heroImage, meta, schema };
+  const heroPrompt = `Hero image for ${title} with high contrast, editorial, 16:9`;
+  return { title, slug, summary, body: raw, heroImage, heroPrompt, meta, schema };
 }
 
 async function sendWeeklyDigest(env: Env, ctx: ExecutionContext) {
@@ -302,4 +330,71 @@ async function trackAnalytics(env: Env, event: string, props: Record<string, unk
     indexes: [props.slug as string | undefined].filter(Boolean) as string[],
     ints: [Date.now()]
   });
+}
+
+function hashToVariant(ip: string) {
+  let hash = 0;
+  for (let i = 0; i < ip.length; i++) hash = (hash << 5) - hash + ip.charCodeAt(i);
+  return Math.abs(hash % 2) === 0 ? 'A' : 'B';
+}
+
+async function bumpMetric(kv: KVNamespace, key: string) {
+  const current = Number((await kv.get(key)) || '0');
+  await kv.put(key, String(current + 1), { expirationTtl: 60 * 60 * 24 * 30 });
+}
+
+function injectAffiliateLinks(html: string, monetisation: any) {
+  if (!monetisation?.affiliates?.length) return html;
+  // very light-touch: wrap first occurrence of each affiliate keyword
+  const keywords = monetisation.affiliates.slice(0, 5);
+  let out = html;
+  for (const kw of keywords) {
+    const pattern = new RegExp(`(${kw.split(' ')[0]})`, 'i');
+    out = out.replace(pattern, `<a href=\"#aff-${slugify(kw)}\" rel=\"nofollow sponsored\" target=\"_blank\">$1</a>`);
+  }
+  return out;
+}
+
+async function injectInternalLinks(env: Env, html: string, slug: string) {
+  const { results } = await env.DB.prepare(
+    `SELECT title, slug FROM articles WHERE status='published' ORDER BY published_at DESC LIMIT 5`
+  ).all();
+  const links = (results as Array<{ title: string; slug: string }>).filter((r) => r.slug !== slug).slice(0, 3);
+  if (!links.length) return html;
+  const list = links.map((l) => `<li><a href=\"/articles/${l.slug}\">${l.title}</a></li>`).join('');
+  return `${html}<section><h3>Related reading</h3><ul>${list}</ul></section>`;
+}
+
+async function generateHeroImage(env: Env, article: any) {
+  try {
+    const prompt = article.heroPrompt || `High quality photo for ${article.title}`;
+    const ai = await env.AI.run('@cf/stabilityai/stable-diffusion-xl-base-1.0', {
+      prompt,
+      num_steps: 25
+    });
+    const bytes = (ai as any).image || new Uint8Array();
+    await env.MEDIA_BUCKET.put(article.heroImage, bytes);
+  } catch (err) {
+    const resp = await fetch('https://picsum.photos/seed/' + article.slug + '/1200/630');
+    const arrayBuf = await resp.arrayBuffer();
+    await env.MEDIA_BUCKET.put(article.heroImage, arrayBuf);
+  }
+  await env.DB.prepare(
+    `INSERT INTO images (id, article_id, url, alt) VALUES (?1, (SELECT id FROM articles WHERE slug=?2 LIMIT 1), ?3, ?4)`
+  )
+    .bind(crypto.randomUUID(), article.slug, `/media/${article.heroImage}`, article.heroPrompt || article.title)
+    .run();
+}
+
+async function pingSitemaps(env: Env) {
+  const sitemapUrl = `${env.PUBLIC_URL}/sitemap.xml`;
+  const endpoints = [
+    `https://www.google.com/ping?sitemap=${encodeURIComponent(sitemapUrl)}`,
+    `https://www.bing.com/ping?sitemap=${encodeURIComponent(sitemapUrl)}`
+  ];
+  await Promise.all(endpoints.map((u) => fetch(u).catch(() => null)));
+}
+
+function slugify(text: string) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }

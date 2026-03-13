@@ -28,11 +28,13 @@ Note the production Worker URL; set as `NEXT_PUBLIC_API_URL` secret for Pages.
 ```
 cd frontend
 npm install
+npm run lint
 npm run build
 npx wrangler pages deploy .vercel/output/static --project-name=autoblog-pages
 ```
 Set environment variables in Pages project:
 - `NEXT_PUBLIC_API_URL` = Worker URL
+- `NEXT_PUBLIC_ADMIN_ACCESS_CODE` = temporary fallback code (prefer Access SSO)
 
 ## 6) Cron + Queue
 Cron is defined in wrangler (`0 */6 * * *`). Ensure Queue consumer uses same binding (auto from deploy). No extra steps.
@@ -48,3 +50,8 @@ Visit `/install` on the Pages site, enter domain + choices, run Deploy. This wri
 
 ## 10) Upgrade path
 - Hit free limits? Upgrade AI calls (Workers AI >= paid), R2 beyond 10GB, Queue throughput. D1 remains SQLite-compatible; migrate to Turso/Neon if needed by adding HTTP fetch adapter.
+
+## Hardening for production
+- Enable Cloudflare Access on `/admin/*`; middleware already honors `CF-Access-Authenticated-User-Email`.
+- Rotate `NEXT_PUBLIC_ADMIN_ACCESS_CODE` after first login; treat as temporary.
+- Add monitoring: Worker health check `/health`, queue failure logs, AI fallbacks.

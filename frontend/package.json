@@ -20,6 +20,7 @@
     "@types/node": "^22.7.4",
     "typescript": "^5.5.4",
     "eslint": "^9.11.0",
-    "eslint-config-next": "^15.0.3"
+    "eslint-config-next": "^15.0.3",
+    "wrangler": "^3.90.0"
   }
 }

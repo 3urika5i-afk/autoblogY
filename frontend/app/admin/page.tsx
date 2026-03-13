@@ -12,11 +12,13 @@ export default function AdminPage() {
     const code = localStorage.getItem('admin_code');
     if (code && code === process.env.NEXT_PUBLIC_ADMIN_ACCESS_CODE) {
       setAuthorized(true);
+      document.cookie = `admin_code=${code}; path=/; SameSite=Lax`;
       return;
     }
     const input = prompt('Admin access code');
     if (input === process.env.NEXT_PUBLIC_ADMIN_ACCESS_CODE) {
       localStorage.setItem('admin_code', input || '');
+      document.cookie = `admin_code=${input}; path=/; SameSite=Lax`;
       setAuthorized(true);
     }
   }, []);

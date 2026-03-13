@@ -18,3 +18,4 @@ Bindings set in `wrangler.jsonc`:
 
 ## Pages (frontend env)
 - `NEXT_PUBLIC_API_URL` — URL of deployed Worker API
+- `NEXT_PUBLIC_ADMIN_ACCESS_CODE` — fallback code for /admin (use Cloudflare Access in production)
