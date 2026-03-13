@@ -1,0 +1,55 @@
+{
+  "name": "autoblog-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["0 */6 * * *"]
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "autoblog-d1",
+      "database_id": "<set-after-create>"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "autoblog-media"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "<set-after-create>"
+    },
+    {
+      "binding": "RATELIMIT",
+      "id": "<set-after-create>"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {"binding": "CONTENT_QUEUE", "queue": "autoblog-content"}
+    ],
+    "consumers": [
+      {"queue": "autoblog-content", "max_batch_size": 10}
+    ]
+  },
+  "analytics_engine_datasets": [
+    {"binding": "ANALYTICS", "dataset": "autoblog-analytics"}
+  ],
+  "send_email": {
+    "name": "EMAIL"
+  },
+  "vars": {
+    "ALLOWED_ORIGINS": "*",
+    "DEFAULT_TIMEZONE": "UTC",
+    "SITE_NAME": "AutoblogY",
+    "PUBLIC_URL": "https://<your-pages-domain>"
+  }
+}

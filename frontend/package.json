@@ -1,0 +1,25 @@
+{
+  "name": "autoblog-pages",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build && npx @cloudflare/next-on-pages build",
+    "pages:deploy": "wrangler pages deploy .vercel/output/static --project-name=autoblog-pages",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@cloudflare/next-on-pages": "^1.15.0",
+    "next": "^15.0.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/node": "^22.7.4",
+    "typescript": "^5.5.4",
+    "eslint": "^9.11.0",
+    "eslint-config-next": "^15.0.3"
+  }
+}
